@@ -6,8 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -28,19 +30,26 @@ type AskTaskRequest struct {
 }
 
 type AskTaskResponse struct {
-	FilePath  string
-	TaskType  taskType
-	MapTaskID int
-	NReduce   int
+	FilePath string
+	Number   int
+	TaskType taskType
+	NReduce  int
+	HasTask  bool
 }
 
 type MapTaskDoneRequest struct {
-	Status    status
-	FilePath  string
-	MapTaskID int
+	Status   status
+	FilePath string
 }
 
 type MapTaskDoneResponse struct {
+}
+
+type ReduceTaskDoneRequest struct {
+	Status status
+	Number int
+}
+type ReduceTaskDoneResponse struct {
 }
 
 // Cook up a unique-ish UNIX-domain socket name

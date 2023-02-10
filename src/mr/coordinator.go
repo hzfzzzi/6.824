@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type status int
@@ -28,13 +29,15 @@ const (
 
 type Coordinator struct {
 	// Your definitions here.
-	filesPath         []string
-	nReducer          int
-	mapStatus         map[string]status
-	mapTaskID         int
-	reduceStatus      map[int]status
-	intermediateFiles map[int][]string
-	mu                sync.Mutex
+	filesPath []string
+	//intermediateFilesPath []string
+	nReducer        int
+	mapStatus       map[string]status
+	reduceStatus    map[int]status
+	mapStartTime    map[string]int64
+	reduceStartTime map[int]int64
+	mu              sync.Mutex
+	hasTask         bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -43,23 +46,66 @@ func (c *Coordinator) AskTask(req *AskTaskRequest, resp *AskTaskResponse) (err e
 		fmt.Printf("ask task err")
 		return err
 	}
-	fmt.Printf("ask task success \n")
-	// 分配任务，如果还有map任务需要分配，则优先分配map任务，否则reduce任务
+	hasMapTask, hasReduceTask := true, true
+	if hasMapTask {
+		hasMapTask = c.allocateMap(req, resp)
+	}
+	if !hasMapTask && hasReduceTask {
+		hasReduceTask = c.allocateReduce(req, resp)
+	}
+	if !hasMapTask && !hasReduceTask {
+		c.hasTask = false
+	}
+	return nil
+}
+
+func (c *Coordinator) allocateMap(req *AskTaskRequest, resp *AskTaskResponse) (hasTask bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for f, status := range c.mapStatus {
 		if status == NOT_START {
-			c.mu.Lock()
 			c.mapStatus[f] = PROCESSING
+			c.mapStartTime[f] = time.Now().Unix()
 			resp.FilePath = f
 			resp.TaskType = MAP
-			resp.MapTaskID = c.mapTaskID
-			c.mapTaskID += 1
 			resp.NReduce = c.nReducer
-			c.mu.Unlock()
-			break
+			resp.HasTask = c.hasTask
+			return true
+		}
+		if status == PROCESSING {
+			t := time.Now().Unix()
+			if t-c.mapStartTime[f] >= 10 {
+				fmt.Printf("map task timeout!,re allocate it \n")
+				c.mapStatus[f] = NOT_START
+			}
+			return true
 		}
 	}
+	return false
+}
 
-	return nil
+func (c *Coordinator) allocateReduce(req *AskTaskRequest, resp *AskTaskResponse) (hasTask bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for num, status := range c.reduceStatus {
+		if status == NOT_START {
+			c.reduceStatus[num] = PROCESSING
+			c.reduceStartTime[num] = time.Now().Unix()
+			resp.Number = num
+			resp.TaskType = REDUCE
+			resp.HasTask = c.hasTask
+			return true
+		}
+		if status == PROCESSING {
+			t := time.Now().Unix()
+			if t-c.reduceStartTime[num] >= 10 {
+				fmt.Printf("reduce task timeout! \n")
+				c.reduceStatus[num] = NOT_START
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Coordinator) MapTaskDone(req *MapTaskDoneRequest, resp *MapTaskDoneResponse) (err error) {
@@ -72,19 +118,25 @@ func (c *Coordinator) MapTaskDone(req *MapTaskDoneRequest, resp *MapTaskDoneResp
 	return nil
 }
 
-//
+func (c *Coordinator) ReduceTaskDone(req *ReduceTaskDoneRequest, resp *ReduceTaskDoneResponse) (err error) {
+	if req.Status == FAILED {
+		c.reduceStatus[req.Number] = NOT_START
+	}
+	if req.Status == FINISHED {
+		c.reduceStatus[req.Number] = FINISHED
+	}
+	return nil
+}
+
 // an example RPC handler.
 //
 // the RPC argument and reply types are defined in rpc.go.
-//
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
 
-//
 // start a thread that listens for RPCs from worker.go
-//
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
@@ -98,34 +150,39 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-//
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
-//
 func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	if !c.hasTask {
+		ret = true
+	}
 	return ret
 }
 
-//
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
-//
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		filesPath: files,
-		nReducer:  nReduce,
-		mapStatus: make(map[string]status),
-		mapTaskID: 0,
+		filesPath:       files,
+		nReducer:        nReduce,
+		mapStatus:       make(map[string]status),
+		reduceStatus:    make(map[int]status),
+		mapStartTime:    make(map[string]int64),
+		reduceStartTime: make(map[int]int64),
+		hasTask:         true,
 	}
-
 	// Your code here.
 	for _, f := range c.filesPath {
 		c.mapStatus[f] = NOT_START
+		c.mapStartTime[f] = time.Now().Unix()
+	}
+	for i := 0; i < c.nReducer; i++ {
+		c.reduceStatus[i] = NOT_START
+		c.reduceStartTime[i] = time.Now().Unix()
 	}
 	c.server()
 	return &c
